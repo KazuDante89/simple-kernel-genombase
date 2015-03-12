@@ -412,6 +412,7 @@ struct power_supply {
 	struct delayed_work deferred_register_work;
 	spinlock_t changed_lock;
 	bool changed;
+	struct wake_lock work_wake_lock;
 	atomic_t use_cnt;
 #ifdef CONFIG_THERMAL
 	struct thermal_zone_device *tzd;
@@ -477,6 +478,23 @@ extern int power_supply_set_battery_charged(struct power_supply *psy);
 extern int power_supply_is_system_supplied(void);
 #else
 static inline int power_supply_is_system_supplied(void) { return -ENOSYS; }
+
+extern int power_supply_get_property(struct power_supply *psy,
+			    enum power_supply_property psp,
+			    union power_supply_propval *val);
+extern int power_supply_set_property(struct power_supply *psy,
+			    enum power_supply_property psp,
+			    const union power_supply_propval *val);
+extern int power_supply_property_is_writeable(struct power_supply *psy,
+					enum power_supply_property psp);
+extern void power_supply_external_power_changed(struct power_supply *psy);
+static inline int power_supply_register(struct device *parent,
+					struct power_supply *psy)
+							{ return -ENOSYS; }
+static inline void power_supply_unregister(struct power_supply *psy) { }
+static inline int power_supply_powers(struct power_supply *psy,
+				      struct device *dev)
+							{ return -ENOSYS; }
 #endif
 
 extern int power_supply_get_property(struct power_supply *psy,

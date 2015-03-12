@@ -344,9 +344,9 @@ EXPORT_SYMBOL_GPL(power_supply_is_system_supplied);
 int power_supply_set_battery_charged(struct power_supply *psy)
 {
 	if (atomic_read(&psy->use_cnt) >= 0 &&
-			psy->desc->type == POWER_SUPPLY_TYPE_BATTERY &&
-			psy->desc->set_charged) {
-		psy->desc->set_charged(psy);
+			psy->type == POWER_SUPPLY_TYPE_BATTERY &&
+			psy->set_charged) {
+		psy->set_charged(psy);
 		return 0;
 	}
 
@@ -388,105 +388,6 @@ struct power_supply *power_supply_get_by_name(const char *name)
 }
 EXPORT_SYMBOL_GPL(power_supply_get_by_name);
 
-/**
- * power_supply_put() - Drop reference obtained with power_supply_get_by_name
- * @psy: Reference to put
- *
- * The reference to power supply should be put before unregistering
- * the power supply.
- */
-void power_supply_put(struct power_supply *psy)
-{
-	might_sleep();
-
-	atomic_dec(&psy->use_cnt);
-	put_device(&psy->dev);
-}
-EXPORT_SYMBOL_GPL(power_supply_put);
-
-#ifdef CONFIG_OF
-static int power_supply_match_device_node(struct device *dev, const void *data)
-{
-	return dev->parent && dev->parent->of_node == data;
-}
-
-/**
- * power_supply_get_by_phandle() - Search for a power supply and returns its ref
- * @np: Pointer to device node holding phandle property
- * @phandle_name: Name of property holding a power supply name
- *
- * If power supply was found, it increases reference count for the
- * internal power supply's device. The user should power_supply_put()
- * after usage.
- *
- * Return: On success returns a reference to a power supply with
- * matching name equals to value under @property, NULL or ERR_PTR otherwise.
- */
-struct power_supply *power_supply_get_by_phandle(struct device_node *np,
-							const char *property)
-{
-	struct device_node *power_supply_np;
-	struct power_supply *psy = NULL;
-	struct device *dev;
-
-	power_supply_np = of_parse_phandle(np, property, 0);
-	if (!power_supply_np)
-		return ERR_PTR(-ENODEV);
-
-	dev = class_find_device(power_supply_class, NULL, power_supply_np,
-						power_supply_match_device_node);
-
-	of_node_put(power_supply_np);
-
-	if (dev) {
-		psy = dev_get_drvdata(dev);
-		atomic_inc(&psy->use_cnt);
-	}
-
-	return psy;
-}
-EXPORT_SYMBOL_GPL(power_supply_get_by_phandle);
-
-static void devm_power_supply_put(struct device *dev, void *res)
-{
-	struct power_supply **psy = res;
-
-	power_supply_put(*psy);
-}
-
-/**
- * devm_power_supply_get_by_phandle() - Resource managed version of
- *  power_supply_get_by_phandle()
- * @dev: Pointer to device holding phandle property
- * @phandle_name: Name of property holding a power supply phandle
- *
- * Return: On success returns a reference to a power supply with
- * matching name equals to value under @property, NULL or ERR_PTR otherwise.
- */
-struct power_supply *devm_power_supply_get_by_phandle(struct device *dev,
-						      const char *property)
-{
-	struct power_supply **ptr, *psy;
-
-	if (!dev->of_node)
-		return ERR_PTR(-ENODEV);
-
-	ptr = devres_alloc(devm_power_supply_put, sizeof(*ptr), GFP_KERNEL);
-	if (!ptr)
-		return ERR_PTR(-ENOMEM);
-
-	psy = power_supply_get_by_phandle(dev->of_node, property);
-	if (IS_ERR_OR_NULL(psy)) {
-		devres_free(ptr);
-	} else {
-		*ptr = psy;
-		devres_add(dev, ptr);
-	}
-	return psy;
-}
-EXPORT_SYMBOL_GPL(devm_power_supply_get_by_phandle);
-#endif /* CONFIG_OF */
-
 int power_supply_get_property(struct power_supply *psy,
 			    enum power_supply_property psp,
 			    union power_supply_propval *val)
@@ -494,7 +395,7 @@ int power_supply_get_property(struct power_supply *psy,
 	if (atomic_read(&psy->use_cnt) <= 0)
 		return -ENODEV;
 
-	return psy->desc->get_property(psy, psp, val);
+	return psy->get_property(psy, psp, val);
 }
 EXPORT_SYMBOL_GPL(power_supply_get_property);
 
@@ -502,33 +403,32 @@ int power_supply_set_property(struct power_supply *psy,
 			    enum power_supply_property psp,
 			    const union power_supply_propval *val)
 {
-	if (atomic_read(&psy->use_cnt) <= 0 || !psy->desc->set_property)
+	if (atomic_read(&psy->use_cnt) <= 0 || !psy->set_property)
 		return -ENODEV;
 
-	return psy->desc->set_property(psy, psp, val);
+	return psy->set_property(psy, psp, val);
 }
 EXPORT_SYMBOL_GPL(power_supply_set_property);
 
 int power_supply_property_is_writeable(struct power_supply *psy,
 					enum power_supply_property psp)
 {
-	if (atomic_read(&psy->use_cnt) <= 0 ||
-			!psy->desc->property_is_writeable)
+	if (atomic_read(&psy->use_cnt) <= 0 || !psy->property_is_writeable)
 		return -ENODEV;
 
-	return psy->desc->property_is_writeable(psy, psp);
+	return psy->property_is_writeable(psy, psp);
 }
 EXPORT_SYMBOL_GPL(power_supply_property_is_writeable);
 
 void power_supply_external_power_changed(struct power_supply *psy)
 {
-	if (atomic_read(&psy->use_cnt) <= 0 ||
-			!psy->desc->external_power_changed)
+	if (atomic_read(&psy->use_cnt) <= 0 || !psy->external_power_changed)
 		return;
 
-	psy->desc->external_power_changed(psy);
+	psy->external_power_changed(psy);
 }
 EXPORT_SYMBOL_GPL(power_supply_external_power_changed);
+
 
 int power_supply_powers(struct power_supply *psy, struct device *dev)
 {
@@ -732,17 +632,8 @@ __power_supply_register(struct device *parent,
 	dev->parent = parent;
 	dev->release = power_supply_dev_release;
 	dev_set_drvdata(dev, psy);
-	psy->desc = desc;
-	if (cfg) {
-		psy->drv_data = cfg->drv_data;
-		psy->of_node = cfg->of_node;
-		psy->supplied_to = cfg->supplied_to;
-		psy->num_supplicants = cfg->num_supplicants;
-	}
-
-	rc = dev_set_name(dev, "%s", desc->name);
-	if (rc)
-		goto dev_set_name_failed;
+	psy->dev = dev;
+	atomic_inc(&psy->use_cnt);
 
 	INIT_WORK(&psy->changed_work, power_supply_changed_work);
 	INIT_DELAYED_WORK(&psy->deferred_register_work,

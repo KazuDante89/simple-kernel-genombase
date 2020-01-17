@@ -73,9 +73,6 @@ static const int big_cpu_freqs[] = {
 #endif
 };
 
-/* Uncomment to disable power readings */
-#define MEASURE_POWER
-
 /* WARNING: Don't bench both clusters at the same time */
 const unsigned long cpu_bench_mask = 0b11110000;
 /***************************** CONFIGURATION END *****************************/
@@ -192,14 +189,14 @@ static void bench_func(int cpu, int freq)
 
 	get_random_bytes(key, sizeof(key));
 
-	pr_info("START: CPU%d: [%7d kHz]\n", cpu, freq);
+	pr_err("START: CPU%d: [%7d kHz]\n", cpu, freq);
 	start = ktime_get();
 
 	/* Benchmark routine */
 	rc4(key, sizeof(key), out, sizeof(out), SZ_4M);
 
 	stop = ktime_get();
-	pr_info("STOP: CPU%d: [%7d kHz] [%7lld us]\n", cpu, freq,
+	pr_err("STOP: CPU%d: [%7d kHz] [%7lld us]\n", cpu, freq,
 		ktime_us_delta(stop, start));
 }
 
@@ -235,26 +232,28 @@ static int cpu_bench_thread(void *data)
 
 static void print_power_usage(struct power_supply *batt_psy)
 {
-#ifdef MEASURE_POWER
 	union power_supply_propval current_val, voltage_val;
 	s64 current_ua, voltage_uv, power_mw;
 	int ret;
 
-	ret = power_supply_get_property(batt_psy, POWER_SUPPLY_PROP_CURRENT_NOW,
+	ret = max77854_fg_get_property(batt_psy, POWER_SUPPLY_PROP_CURRENT_NOW,
 					&current_val);
-	if (ret)
+	if (ret) {
+		pr_err("can't get POWER_SUPPLY_PROP_CURRENT_NOW");
 		return;
+	}
 
-	ret = power_supply_get_property(batt_psy, POWER_SUPPLY_PROP_VOLTAGE_NOW,
+	ret = max77854_fg_get_property(batt_psy, POWER_SUPPLY_PROP_VOLTAGE_NOW,
 					&voltage_val);
-	if (ret)
+	if (ret) {
+		pr_err("can't get POWER_SUPPLY_PROP_VOLTAGE_NOW");
 		return;
+	}
 
 	current_ua = current_val.intval;
 	voltage_uv = voltage_val.intval;
 	power_mw = current_ua * voltage_uv / 1000000000ULL;
-	pr_info("power usage [%6lld mW]\n", power_mw);
-#endif
+	pr_err("power usage [%6lld mW]\n", power_mw);
 }
 
 static int master_thread(void *data)
@@ -269,13 +268,11 @@ static int master_thread(void *data)
 
 	sched_setscheduler_nocheck(current, SCHED_FIFO, &sched_max_rt_prio);
 
-#ifdef MEASURE_POWER
-	batt_psy = power_supply_get_by_name("bms");
+	batt_psy = power_supply_get_by_name("max77854-fuelgauge");
 	if (!batt_psy) {
 		pr_err("failed to get batt supply\n");
 		goto exit;
 	}
-#endif
 
 	if (cpufreq_register_notifier(&cpu_notif, CPUFREQ_POLICY_NOTIFIER)) {
 		pr_err("failed to register cpu notifier\n");
@@ -347,6 +344,8 @@ static int __init sultan_bench_init(void)
 	kthread_bind(thread, cpumask_first(to_cpumask(&cpu_bench_mask)));
 	wake_up_process(thread);
 	wait_for_completion(&benchmark_done);
+
+	panic("DONE!");
 
 	return 0;
 }

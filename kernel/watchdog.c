@@ -365,12 +365,7 @@ static void watchdog_check_hardlockup_other_cpu(void)
 		if (per_cpu(hard_watchdog_warn, next_cpu) == true)
 			return;
 
-		if (hardlockup_panic) {
-			pr_err("Watchdog detected hard LOCKUP on cpu %u",
-					next_cpu);
-			msm_trigger_wdog_bite();
-		}
-		else
+		if (hardlockup_panic)
 			WARN(1, "Watchdog detected hard LOCKUP on cpu %u", next_cpu);
 
 		per_cpu(hard_watchdog_warn, next_cpu) = true;
@@ -430,27 +425,9 @@ static void watchdog_overflow_callback(struct perf_event *event,
 		if (__this_cpu_read(hard_watchdog_warn) == true)
 			return;
 
-		pr_emerg("Watchdog detected hard LOCKUP on cpu %d", this_cpu);
 		if (hardlockup_panic)
-			msm_trigger_wdog_bite();
-
-		print_modules();
-		print_irqtrace_events(current);
-		if (regs)
-			show_regs(regs);
-		else
-			dump_stack();
-
-		/*
-		 * Perform all-CPU dump only once to avoid multiple hardlockups
-		 * generating interleaving traces
-		 */
-		if (sysctl_hardlockup_all_cpu_backtrace &&
-				!test_and_set_bit(0, &hardlockup_allcpu_dumped))
-			trigger_allbutself_cpu_backtrace();
-
-		if (hardlockup_panic)
-			panic("Hard LOCKUP");
+			WARN(1, "Watchdog detected hard LOCKUP on cpu %d",
+			     this_cpu);
 
 		__this_cpu_write(hard_watchdog_warn, true);
 		return;
@@ -579,8 +556,14 @@ static enum hrtimer_restart watchdog_timer_fn(struct hrtimer *hrtimer)
 		}
 
 		add_taint(TAINT_SOFTLOCKUP, LOCKDEP_STILL_OK);
-		if (softlockup_panic)
-			panic("softlockup: hung tasks");
+		if (softlockup_panic) {
+#ifdef CONFIG_SEC_DEBUG_EXTRA_INFO
+			if (regs) {
+				sec_debug_set_extra_info_fault(WATCHDOG_FAULT, (unsigned long)regs->pc, regs);
+				sec_debug_set_extra_info_backtrace(regs);
+			}
+#endif
+		}
 		__this_cpu_write(soft_watchdog_warn, true);
 	} else
 		__this_cpu_write(soft_watchdog_warn, false);
@@ -1124,33 +1107,46 @@ int proc_watchdog_thresh(struct ctl_table *table, int write,
 {
 	int err, old, new;
 
-	get_online_cpus();
-	mutex_lock(&watchdog_proc_mutex);
-
-	if (watchdog_suspended) {
-		/* no parameter changes allowed while watchdog is suspended */
-		err = -EAGAIN;
-		goto out;
+	sl_info->preempt_count = preempt_count();
+	if (softirq_count() &&
+		sl_info->softirq_info.last_arrival != 0 && sl_info->softirq_info.fn != NULL) {
+		sl_info->delay_time = local_clock() - sl_info->softirq_info.last_arrival;
+		sl_info->sl_type = SL_SOFTIRQ_STUCK;
+		pr_auto(ASL9, "Softlockup state: %s, Latency: %lluns, Softirq type: %s, Func: %pf, preempt_count : %x\n",
+			sl_to_name[sl_info->sl_type], sl_info->delay_time, sl_info->softirq_info.softirq_type, sl_info->softirq_info.fn, sl_info->preempt_count);
+	} else {
+		if (!(preempt_count() & PREEMPT_MASK) || softirq_count())
+			sl_info->sl_type = SL_UNKNOWN_STUCK;
+		pr_auto(ASL9, "Softlockup state: %s, Latency: %lluns, Task: %s, preempt_count: %x\n",
+			sl_to_name[sl_info->sl_type], sl_info->delay_time, sl_info->task_info.task_comm, sl_info->preempt_count);
 	}
 
 	old = ACCESS_ONCE(watchdog_thresh);
 	err = proc_dointvec_minmax(table, write, buffer, lenp, ppos);
 
-	if (err || !write)
-		goto out;
+#ifdef CONFIG_HARDLOCKUP_DETECTOR_OTHER_CPU
+static void check_hardlockup_type(unsigned int cpu)
+{
+	struct hardlockup_info *hl_info = per_cpu_ptr(&percpu_hl_info, cpu);
 
-	/*
-	 * Update the sample period. Restore on failure.
-	 */
-	new = ACCESS_ONCE(watchdog_thresh);
-	if (old == new)
-		goto out;
-
-	set_sample_period();
-	err = proc_watchdog_update();
-	if (err) {
-		watchdog_thresh = old;
-		set_sample_period();
+	if (hl_info->hl_type == HL_TASK_STUCK) {
+		pr_auto(ASL9, "Hardlockup state: %s, Latency: %lluns, TASK: %s\n",
+			hl_to_name[hl_info->hl_type], hl_info->delay_time, hl_info->task_info.task_comm);
+	} else if (hl_info->hl_type == HL_IRQ_STUCK) {
+		pr_auto(ASL9, "Hardlockup state: %s, Latency: %lluns, IRQ: %d, Func: %pf\n",
+			hl_to_name[hl_info->hl_type], hl_info->delay_time, hl_info->irq_info.irq, hl_info->irq_info.fn);
+	} else if (hl_info->hl_type == HL_IDLE_STUCK) {
+		pr_auto(ASL9, "Hardlockup state: %s, Latency: %lluns, mode: %s\n",
+			hl_to_name[hl_info->hl_type], hl_info->delay_time,  hl_info->cpuidle_info.mode);
+	} else if (hl_info->hl_type == HL_SMC_CALL_STUCK) {
+		pr_auto(ASL9, "Hardlockup state: %s, Latency: %lluns, CMD: %u\n",
+			hl_to_name[hl_info->hl_type], hl_info->delay_time,  hl_info->smc_info.cmd);
+	} else if (hl_info->hl_type == HL_IRQ_STORM) {
+		pr_auto(ASL9, "Hardlockup state: %s, Latency: %lluns, IRQ : %d, Func: %pf, Avg period: %lluns\n",
+			hl_to_name[hl_info->hl_type], hl_info->delay_time, hl_info->irq_info.irq, hl_info->irq_info.fn, hl_info->irq_info.avg_period);
+	} else if (hl_info->hl_type == HL_UNKNOWN_STUCK) {
+		pr_auto(ASL9, "Hardlockup state: %s, Latency: %lluns, TASK: %s\n",
+			hl_to_name[hl_info->hl_type], hl_info->delay_time, hl_info->task_info.task_comm);
 	}
 out:
 	mutex_unlock(&watchdog_proc_mutex);

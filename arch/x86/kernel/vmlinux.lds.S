@@ -34,14 +34,14 @@ OUTPUT_FORMAT(CONFIG_OUTPUT_FORMAT, CONFIG_OUTPUT_FORMAT, CONFIG_OUTPUT_FORMAT)
 #ifdef CONFIG_X86_32
 OUTPUT_ARCH(i386)
 ENTRY(phys_startup_32)
-jiffies = jiffies_64;
 #else
 OUTPUT_ARCH(i386:x86-64)
 ENTRY(phys_startup_64)
-jiffies_64 = jiffies;
 #endif
 
-#if defined(CONFIG_X86_64)
+jiffies = jiffies_64;
+
+#if defined(CONFIG_X86_64) && defined(CONFIG_DEBUG_RODATA)
 /*
  * On 64-bit, align RODATA to 2MB so we retain large page mappings for
  * boundaries spanning kernel text, rodata and data sections.
@@ -386,4 +386,3 @@ INIT_PER_CPU(irq_stack_union);
 . = ASSERT(kexec_control_code_size <= KEXEC_CONTROL_CODE_MAX_SIZE,
            "kexec control code size is too big");
 #endif
-
